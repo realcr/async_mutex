@@ -12,13 +12,13 @@ struct NeighborMoveToken {
         tokenChannelIndex @0: UInt8;
         transactions @1: List(Data);
         oldToken @2: CustomUInt256;
-        randNonce @3: CustomUInt256;
+        randNonce @3: CustomUInt128;
 }
 
 struct NeighborInconsistencyError {
         tokenChannelIndex @0: UInt8;
         currentToken @1: CustomUInt256;
-        balanceForReset @2: UInt64;
+        balanceForReset @2: Int64;
 }
 
 
@@ -74,33 +74,40 @@ struct RequestSendMessageTran {
         route @1: NeighborsRoute;
         requestContent :union {
                 commMeans @2: Void;
-                encrypted @3: Data;
+                encrypted @3: EncMessage;
         }
         maxResponseLength @4: UInt32;
         processingFeeProposal @5: UInt64;
-        halfCreditsPerByteProposal @6: UInt64;
+        creditsPerByteProposal @6: UInt64;
 }
 
 
 struct ResponseSendMessageTran {
         requestId @0: CustomUInt128;
-        responseData @1: Data;
-        signature @2: CustomUInt512;
+        randNonce @1: CustomUInt128;
+        responseData @2: Data;
+        signature @3: CustomUInt512;
         # Signature{key=recipientKey}(
         #   "MESSAGE_SUCCESS" ||
         #   requestId ||
         #   sha512/256(route) ||
-        #   sha512/256(requestContent) ||
+        #   hash(requestContent) ||
         #   maxResponseLength ||
         #   processingFeeProposal ||
-        #   halfCreditsPerBytesProposal || 
-        #   sha512/256(responseContent))
+        #   creditsPerByteProposal || 
+        #   sha512/256(responseContent)
+        #   randNonce)
+        #
+        # Where hash(requestContent) = 
+        #    sha512/256("commMeans") or 
+        #    sha512/256("encrypted" || EncMessage)
 }
 
 struct FailedSendMessageTran {
         requestId @0: CustomUInt128;
         reportingPublicKey @1: CustomUInt256;
-        signature @2: CustomUInt512;
+        randNonce @2: CustomUInt128;
+        signature @3: CustomUInt512;
         # Signature{key=reportingNodePublicKey}(
         #   "MESSAGE_FAILURE" ||
         #   requestId ||
@@ -108,7 +115,8 @@ struct FailedSendMessageTran {
         #   sha512/256(requestContent) ||
         #   maxResponseLength ||
         #   processingFeeProposal ||
-        #   halfCreditsPerBytesProposal)
+        #   creditsPerByteProposal || 
+        #   randNonce)
 }
 
 
