@@ -1,4 +1,8 @@
-#![deny(warnings)]
+extern crate crossbeam;
+extern crate futures;
+#[macro_use]
+extern crate log;
+extern crate tokio_core;
 
 use std::mem;
 use std::rc::Rc;
