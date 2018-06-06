@@ -1,4 +1,3 @@
-extern crate crossbeam;
 extern crate futures;
 #[macro_use]
 extern crate log;
@@ -11,13 +10,13 @@ use std::cell::RefCell;
 use futures::prelude::*;
 use futures::sync::oneshot;
 
-use crossbeam::sync::MsQueue;
+use std::collections::LinkedList;
 
 #[derive(Debug)]
 pub struct Inner<T> {
     is_broken: bool,
     resource: Option<T>,
-    awakeners: MsQueue<oneshot::Sender<T>>,
+    awakeners: LinkedList<oneshot::Sender<T>>,
 }
 
 impl<T> Inner<T> {
@@ -25,7 +24,7 @@ impl<T> Inner<T> {
         let mut bucket = Some(resource);
 
         if !self.awakeners.is_empty() {
-            while let Some(awakener) = self.awakeners.try_pop() {
+            while let Some(awakener) = self.awakeners.pop_front() {
                 let resource = bucket
                     .take()
                     .expect("Attempted to take resource after it gone");
@@ -43,8 +42,8 @@ impl<T> Inner<T> {
         self.resource = bucket;
     }
 
-    fn drop_awakeners(&self) {
-        while let Some(waiter) = self.awakeners.try_pop() {
+    fn drop_awakeners(&mut self) {
+        while let Some(waiter) = self.awakeners.pop_front() {
             drop(waiter);
         }
     }
@@ -86,7 +85,7 @@ impl<T> AsyncMutex<T> {
     /// Create a new **single threading** shared mutex resource.
     pub fn new(t: T) -> AsyncMutex<T> {
         let inner = Rc::new(RefCell::new(Inner {
-            awakeners: MsQueue::new(),
+            awakeners: LinkedList::new(),
             resource: Some(t),
             is_broken: false,
         }));
@@ -118,7 +117,7 @@ impl<T> AsyncMutex<T> {
                 // 1. The resource is being used, **and there are NO other waiters**.
                 // 2. The resource is being used, **and there are other waiters**.
                 let (awakener, waiter) = oneshot::channel::<T>();
-                self.inner.borrow_mut().awakeners.push(awakener);
+                self.inner.borrow_mut().awakeners.push_back(awakener);
 
                 AcquireFuture {
                     inner: Rc::clone(&self.inner),

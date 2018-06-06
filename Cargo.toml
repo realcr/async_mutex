@@ -4,7 +4,6 @@ version = "0.1.0"
 authors = ["Do Duy <juchiast@gmail.com>"]
 
 [dependencies]
-crossbeam = "0.3"
 futures = "0.1"
 log = "0.4"
 tokio-core = "0.1"
