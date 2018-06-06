@@ -15,13 +15,13 @@ use crossbeam::sync::MsQueue;
 
 #[derive(Debug)]
 pub struct Inner<T> {
-    is_broken: RefCell<bool>,
-    resource: RefCell<Option<T>>,
+    is_broken: bool,
+    resource: Option<T>,
     awakeners: MsQueue<oneshot::Sender<T>>,
 }
 
 impl<T> Inner<T> {
-    fn wakeup_next(&self, resource: T) {
+    fn wakeup_next(&mut self, resource: T) {
         let mut bucket = Some(resource);
 
         if !self.awakeners.is_empty() {
@@ -40,7 +40,7 @@ impl<T> Inner<T> {
             }
         }
 
-        self.resource.replace(bucket);
+        self.resource = bucket;
     }
 
     fn drop_awakeners(&self) {
@@ -52,7 +52,7 @@ impl<T> Inner<T> {
 
 #[derive(Debug)]
 pub struct AsyncMutex<T> {
-    inner: Rc<Inner<T>>,
+    inner: Rc<RefCell<Inner<T>>>,
 }
 
 #[derive(Debug)]
@@ -78,18 +78,18 @@ enum AcquireFutureState<T, F, G> {
 #[derive(Debug)]
 #[must_use = "futures do nothing unless polled"]
 pub struct AcquireFuture<T, F, G> {
-    inner: Rc<Inner<T>>,
+    inner: Rc<RefCell<Inner<T>>>,
     state: AcquireFutureState<T, F, G>,
 }
 
 impl<T> AsyncMutex<T> {
     /// Create a new **single threading** shared mutex resource.
     pub fn new(t: T) -> AsyncMutex<T> {
-        let inner = Rc::new(Inner {
+        let inner = Rc::new(RefCell::new(Inner {
             awakeners: MsQueue::new(),
-            resource: RefCell::new(Some(t)),
-            is_broken: RefCell::new(false),
-        });
+            resource: Some(t),
+            is_broken: false,
+        }));
 
         AsyncMutex { inner }
     }
@@ -109,14 +109,16 @@ impl<T> AsyncMutex<T> {
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
-        match self.inner.resource.replace(None) {
+        let mut resource = None;
+        std::mem::swap(&mut self.inner.borrow_mut().resource, &mut resource);
+        match resource {
             None => {
                 // If the resource is `None`, there will be two cases:
                 //
                 // 1. The resource is being used, **and there are NO other waiters**.
                 // 2. The resource is being used, **and there are other waiters**.
                 let (awakener, waiter) = oneshot::channel::<T>();
-                self.inner.awakeners.push(awakener);
+                self.inner.borrow_mut().awakeners.push(awakener);
 
                 AcquireFuture {
                     inner: Rc::clone(&self.inner),
@@ -124,7 +126,7 @@ impl<T> AsyncMutex<T> {
                 }
             }
             Some(t) => {
-                assert!(self.inner.awakeners.is_empty());
+                assert!(self.inner.borrow().awakeners.is_empty());
 
                 AcquireFuture {
                     inner: Rc::clone(&self.inner),
@@ -145,12 +147,13 @@ where
     type Error = AsyncMutexError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let mut inner = self.inner.borrow_mut();
         loop {
             match mem::replace(&mut self.state, AcquireFutureState::Empty) {
                 AcquireFutureState::Empty => unreachable!(),
                 AcquireFutureState::WaitResource((mut waiter, f)) => {
-                    if *self.inner.is_broken.borrow() {
-                        self.inner.drop_awakeners();
+                    if inner.is_broken {
+                        inner.drop_awakeners();
                         return Err(AsyncMutexError::ResourceBroken);
                     }
                     match waiter
@@ -160,6 +163,7 @@ where
                         Async::Ready(t) => {
                             trace!("AcquireFuture::WaitResource -- Ready");
 
+                            // TODO f(t) doesn't return immediately
                             self.state = AcquireFutureState::WaitFunction(f(t).into_future());
                         }
                         Async::NotReady => {
@@ -173,10 +177,10 @@ where
                 AcquireFutureState::WaitFunction(mut f) => {
                     match f.poll().map_err(|(resource, acquirer_error)| {
                         if let Some(resource) = resource {
-                            self.inner.wakeup_next(resource);
+                            inner.wakeup_next(resource);
                         } else {
-                            self.inner.is_broken.replace(true);
-                            self.inner.drop_awakeners();
+                            inner.is_broken = true;
+                            inner.drop_awakeners();
                         }
                         acquirer_error
                     })? {
@@ -189,7 +193,7 @@ where
                         Async::Ready((resource, output)) => {
                             trace!("AcquireFuture::WaitFunction -- Ready");
 
-                            self.inner.wakeup_next(resource);
+                            inner.wakeup_next(resource);
                             return Ok(Async::Ready(output));
                         }
                     }
