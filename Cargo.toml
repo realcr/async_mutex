@@ -6,4 +6,6 @@ authors = ["real <real@freedomlayer.org>"]
 [dependencies]
 futures = "0.1"
 log = "0.4"
+
+[dev-dependencies]
 tokio-core = "0.1"

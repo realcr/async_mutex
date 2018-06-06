@@ -1,6 +1,7 @@
 extern crate futures;
 #[macro_use]
 extern crate log;
+#[cfg(test)]
 extern crate tokio_core;
 
 use std::mem;
