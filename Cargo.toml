@@ -1,7 +1,7 @@
 [package]
 name = "async_mutex"
 version = "0.1.1"
-authors = ["real <real@freedomlayer.org>"]
+authors = ["real <real@freedomlayer.org>", "Kamyuen Tse <kevin.xjy@gmail.com>", "Do Duy <juchiast@gmail.com>"]
 
 [dependencies]
 futures = "0.1"
