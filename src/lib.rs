@@ -4,9 +4,9 @@ extern crate log;
 #[cfg(test)]
 extern crate tokio_core;
 
+use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
-use std::cell::RefCell;
 
 use futures::prelude::*;
 use futures::sync::oneshot;
@@ -14,9 +14,15 @@ use futures::sync::oneshot;
 use std::collections::LinkedList;
 
 #[derive(Debug)]
+enum ResourceState<T> {
+    Broken,
+    Pending,
+    Present(T),
+}
+
+#[derive(Debug)]
 pub struct Inner<T> {
-    is_broken: bool,
-    resource: Option<T>,
+    resource: ResourceState<T>,
     awakeners: LinkedList<oneshot::Sender<T>>,
 }
 
@@ -40,7 +46,10 @@ impl<T> Inner<T> {
             }
         }
 
-        self.resource = bucket;
+        self.resource = match bucket {
+            Some(resource) => ResourceState::Present(resource),
+            None => ResourceState::Pending,
+        };
     }
 
     fn drop_awakeners(&mut self) {
@@ -87,8 +96,7 @@ impl<T> AsyncMutex<T> {
     pub fn new(t: T) -> AsyncMutex<T> {
         let inner = Rc::new(RefCell::new(Inner {
             awakeners: LinkedList::new(),
-            resource: Some(t),
-            is_broken: false,
+            resource: ResourceState::Present(t),
         }));
 
         AsyncMutex { inner }
@@ -109,10 +117,10 @@ impl<T> AsyncMutex<T> {
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
-        let mut resource = None;
+        let mut resource = ResourceState::Pending;
         std::mem::swap(&mut self.inner.borrow_mut().resource, &mut resource);
         match resource {
-            None => {
+            ResourceState::Pending | ResourceState::Broken => {
                 // If the resource is `None`, there will be two cases:
                 //
                 // 1. The resource is being used, **and there are NO other waiters**.
@@ -125,7 +133,7 @@ impl<T> AsyncMutex<T> {
                     state: AcquireFutureState::WaitResource((waiter, f)),
                 }
             }
-            Some(t) => {
+            ResourceState::Present(t) => {
                 assert!(self.inner.borrow().awakeners.is_empty());
 
                 AcquireFuture {
@@ -152,7 +160,7 @@ where
             match mem::replace(&mut self.state, AcquireFutureState::Empty) {
                 AcquireFutureState::Empty => unreachable!(),
                 AcquireFutureState::WaitResource((mut waiter, f)) => {
-                    if inner.is_broken {
+                    if let ResourceState::Broken = inner.resource {
                         inner.drop_awakeners();
                         return Err(AsyncMutexError::ResourceBroken);
                     }
@@ -179,7 +187,7 @@ where
                         if let Some(resource) = resource {
                             inner.wakeup_next(resource);
                         } else {
-                            inner.is_broken = true;
+                            inner.resource = ResourceState::Broken;
                             inner.drop_awakeners();
                         }
                         acquirer_error
@@ -292,19 +300,21 @@ mod tests {
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        let task = async_mutex.clone().acquire(move |mut num_cell| -> Result<_, (_, ())> {
-            num_cell.num += 1;
-
-            let nested_task = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
-                assert_eq!(num_cell.num, 1);
+        let task = async_mutex
+            .clone()
+            .acquire(move |mut num_cell| -> Result<_, (_, ())> {
                 num_cell.num += 1;
-                Ok((num_cell, ()))
-            });
-            handle.spawn(nested_task.map_err(|_| ()));
 
-            let num = num_cell.num;
-            Ok((num_cell, num))
-        });
+                let nested_task = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+                    assert_eq!(num_cell.num, 1);
+                    num_cell.num += 1;
+                    Ok((num_cell, ()))
+                });
+                handle.spawn(nested_task.map_err(|_| ()));
+
+                let num = num_cell.num;
+                Ok((num_cell, num))
+            });
 
         assert_eq!(core.run(task).unwrap(), 1);
     }
