@@ -16,45 +16,44 @@ use std::collections::LinkedList;
 #[derive(Debug)]
 enum ResourceState<T> {
     Broken,
-    Pending,
+    Pending(LinkedList<oneshot::Sender<T>>),
     Present(T),
 }
 
 #[derive(Debug)]
 pub struct Inner<T> {
     resource: ResourceState<T>,
-    awakeners: LinkedList<oneshot::Sender<T>>,
 }
 
 impl<T> Inner<T> {
     fn wakeup_next(&mut self, resource: T) {
-        let mut bucket = Some(resource);
+        let mut this = ResourceState::Broken;
+        mem::swap(&mut self.resource, &mut this);
 
-        if !self.awakeners.is_empty() {
-            while let Some(awakener) = self.awakeners.pop_front() {
-                let resource = bucket
-                    .take()
-                    .expect("Attempted to take resource after it gone");
+        self.resource = match this {
+            ResourceState::Pending(mut awakeners) => {
+                let mut bucket = Some(resource);
 
-                match awakener.send(resource) {
-                    Ok(_) => break,
-                    Err(resource) => {
-                        bucket = Some(resource);
-                        continue;
+                while let Some(awakener) = awakeners.pop_front() {
+                    let resource = bucket
+                        .take()
+                        .expect("Attempted to take resource after it gone");
+
+                    match awakener.send(resource) {
+                        Ok(_) => break,
+                        Err(resource) => {
+                            bucket = Some(resource);
+                            continue;
+                        }
                     }
                 }
+
+                match bucket {
+                    Some(t) => ResourceState::Present(t),
+                    None => ResourceState::Pending(awakeners),
+                }
             }
-        }
-
-        self.resource = match bucket {
-            Some(resource) => ResourceState::Present(resource),
-            None => ResourceState::Pending,
-        };
-    }
-
-    fn drop_awakeners(&mut self) {
-        while let Some(waiter) = self.awakeners.pop_front() {
-            drop(waiter);
+            _ => this,
         }
     }
 }
@@ -81,6 +80,7 @@ impl<E> From<E> for AsyncMutexError<E> {
 enum AcquireFutureState<T, F, G> {
     WaitResource((oneshot::Receiver<T>, F)),
     WaitFunction(G),
+    Broken,
     Empty,
 }
 
@@ -95,7 +95,6 @@ impl<T> AsyncMutex<T> {
     /// Create a new **single threading** shared mutex resource.
     pub fn new(t: T) -> AsyncMutex<T> {
         let inner = Rc::new(RefCell::new(Inner {
-            awakeners: LinkedList::new(),
             resource: ResourceState::Present(t),
         }));
 
@@ -117,16 +116,13 @@ impl<T> AsyncMutex<T> {
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
-        let mut resource = ResourceState::Pending;
+        let mut resource = ResourceState::Broken;
         std::mem::swap(&mut self.inner.borrow_mut().resource, &mut resource);
         match resource {
-            ResourceState::Pending | ResourceState::Broken => {
-                // If the resource is `None`, there will be two cases:
-                //
-                // 1. The resource is being used, **and there are NO other waiters**.
-                // 2. The resource is being used, **and there are other waiters**.
+            ResourceState::Pending(mut awakeners) => {
                 let (awakener, waiter) = oneshot::channel::<T>();
-                self.inner.borrow_mut().awakeners.push_back(awakener);
+                awakeners.push_back(awakener);
+                self.inner.borrow_mut().resource = ResourceState::Pending(awakeners);
 
                 AcquireFuture {
                     inner: Rc::clone(&self.inner),
@@ -134,12 +130,15 @@ impl<T> AsyncMutex<T> {
                 }
             }
             ResourceState::Present(t) => {
-                assert!(self.inner.borrow().awakeners.is_empty());
-
+                self.inner.borrow_mut().resource = ResourceState::Pending(LinkedList::new());
                 AcquireFuture {
                     inner: Rc::clone(&self.inner),
                     state: AcquireFutureState::WaitFunction(f(t).into_future()),
                 }
+            }
+            ResourceState::Broken => AcquireFuture {
+                inner: Rc::clone(&self.inner),
+                state: AcquireFutureState::Broken,
             }
         }
     }
@@ -159,9 +158,11 @@ where
         loop {
             match mem::replace(&mut self.state, AcquireFutureState::Empty) {
                 AcquireFutureState::Empty => unreachable!(),
+                AcquireFutureState::Broken => {
+                    return Err(AsyncMutexError::ResourceBroken);
+                }
                 AcquireFutureState::WaitResource((mut waiter, f)) => {
                     if let ResourceState::Broken = inner.resource {
-                        inner.drop_awakeners();
                         return Err(AsyncMutexError::ResourceBroken);
                     }
                     match waiter
@@ -171,7 +172,6 @@ where
                         Async::Ready(t) => {
                             trace!("AcquireFuture::WaitResource -- Ready");
 
-                            // TODO f(t) doesn't return immediately
                             self.state = AcquireFutureState::WaitFunction(f(t).into_future());
                         }
                         Async::NotReady => {
@@ -188,7 +188,6 @@ where
                             inner.wakeup_next(resource);
                         } else {
                             inner.resource = ResourceState::Broken;
-                            inner.drop_awakeners();
                         }
                         acquirer_error
                     })? {
