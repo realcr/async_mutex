@@ -325,7 +325,7 @@ mod tests {
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task1 = async_mutex
-            .acquire(|num_cell| -> Result<(_, ()), (_, ())> { Err((Some(num_cell), ())) });
+            .acquire(|num_cell| -> Result<(_, ()), _> { Err((Some(num_cell), ())) });
 
         let task2 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
             num_cell.num += 1;
@@ -333,7 +333,7 @@ mod tests {
             Ok((num_cell, num))
         });
 
-        let task3 = async_mutex.acquire(|_| -> Result<(_, ()), (_, ())> { Err((None, ())) });
+        let task3 = async_mutex.acquire(|_| -> Result<(_, ()), _> { Err((None, ())) });
 
         let task4 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
             num_cell.num += 1;
