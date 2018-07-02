@@ -15,6 +15,7 @@ use std::collections::LinkedList;
 
 #[derive(Debug)]
 enum ResourceState<T> {
+    Empty,
     Broken,
     Pending(LinkedList<oneshot::Sender<T>>),
     Present(T),
@@ -27,10 +28,11 @@ pub struct Inner<T> {
 
 impl<T> Inner<T> {
     fn wakeup_next(&mut self, resource: T) {
-        let mut this = ResourceState::Broken;
+        let mut this = ResourceState::Empty;
         mem::swap(&mut self.resource, &mut this);
 
         self.resource = match this {
+            ResourceState::Empty => unreachable!(),
             ResourceState::Pending(mut awakeners) => {
                 let mut bucket = Some(resource);
 
