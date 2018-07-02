@@ -113,7 +113,8 @@ impl<T> AsyncMutex<T> {
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
-        match mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty) {
+        let resource = mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty);
+        match resource {
             ResourceState::Empty => unreachable!(),
             ResourceState::Pending(mut awakeners) => {
                 let (awakener, waiter) = oneshot::channel::<T>();
