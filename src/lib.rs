@@ -121,6 +121,7 @@ impl<T> AsyncMutex<T> {
         let mut resource = ResourceState::Broken;
         std::mem::swap(&mut self.inner.borrow_mut().resource, &mut resource);
         match resource {
+            ResourceState::Empty => unreachable!(),
             ResourceState::Pending(mut awakeners) => {
                 let (awakener, waiter) = oneshot::channel::<T>();
                 awakeners.push_back(awakener);
