@@ -28,34 +28,29 @@ pub struct Inner<T> {
 
 impl<T> Inner<T> {
     fn wakeup_next(&mut self, resource: T) {
-        let mut this = ResourceState::Empty;
-        mem::swap(&mut self.resource, &mut this);
+        if let ResourceState::Pending(mut awakeners) =
+            mem::replace(&mut self.resource, ResourceState::Empty)
+        {
+            let mut bucket = Some(resource);
 
-        self.resource = match this {
-            ResourceState::Empty => unreachable!(),
-            ResourceState::Pending(mut awakeners) => {
-                let mut bucket = Some(resource);
+            while let Some(awakener) = awakeners.pop_front() {
+                let resource = bucket
+                    .take()
+                    .expect("Attempted to take resource after it gone");
 
-                while let Some(awakener) = awakeners.pop_front() {
-                    let resource = bucket
-                        .take()
-                        .expect("Attempted to take resource after it gone");
-
-                    match awakener.send(resource) {
-                        Ok(_) => break,
-                        Err(resource) => {
-                            bucket = Some(resource);
-                            continue;
-                        }
+                match awakener.send(resource) {
+                    Ok(_) => break,
+                    Err(resource) => {
+                        bucket = Some(resource);
+                        continue;
                     }
                 }
-
-                match bucket {
-                    Some(t) => ResourceState::Present(t),
-                    None => ResourceState::Pending(awakeners),
-                }
             }
-            _ => this,
+
+            self.resource = match bucket {
+                Some(t) => ResourceState::Present(t),
+                None => ResourceState::Pending(awakeners),
+            }
         }
     }
 }
@@ -118,9 +113,7 @@ impl<T> AsyncMutex<T> {
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
-        let mut resource = ResourceState::Broken;
-        std::mem::swap(&mut self.inner.borrow_mut().resource, &mut resource);
-        match resource {
+        match mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty) {
             ResourceState::Empty => unreachable!(),
             ResourceState::Pending(mut awakeners) => {
                 let (awakener, waiter) = oneshot::channel::<T>();
@@ -142,7 +135,7 @@ impl<T> AsyncMutex<T> {
             ResourceState::Broken => AcquireFuture {
                 inner: Rc::clone(&self.inner),
                 state: AcquireFutureState::Broken,
-            }
+            },
         }
     }
 }
@@ -327,8 +320,8 @@ mod tests {
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        let task1 = async_mutex
-            .acquire(|num_cell| -> Result<(_, ()), _> { Err((Some(num_cell), ())) });
+        let task1 =
+            async_mutex.acquire(|num_cell| -> Result<(_, ()), _> { Err((Some(num_cell), ())) });
 
         let task2 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
             num_cell.num += 1;
