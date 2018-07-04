@@ -65,7 +65,7 @@ mod tests {
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        let task1 = async_mutex.acquire(|ref mut num_cell| -> Result<(), ()> {
+        let task1 = async_mutex.acquire(|num_cell| -> Result<(), ()> {
             num_cell.num += 1;
             Ok(())
         });
@@ -73,18 +73,18 @@ mod tests {
         handle.spawn(task1.map_err(|_| ()));
 
         {
-            let _ = async_mutex.acquire(|ref mut num_cell| -> Result<(), ()> {
+            let _ = async_mutex.acquire(|num_cell| -> Result<(), ()> {
                 num_cell.num += 1;
                 Ok(())
             });
 
-            let _ = async_mutex.acquire(|ref mut num_cell| -> Result<(), ()> {
+            let _ = async_mutex.acquire(|num_cell| -> Result<(), ()> {
                 num_cell.num += 1;
                 Ok(())
             });
         }
 
-        let task2 = async_mutex.acquire(|ref mut num_cell| -> Result<_, ()> {
+        let task2 = async_mutex.acquire(|num_cell| -> Result<_, ()> {
             num_cell.num += 1;
             let num = num_cell.num;
             Ok(num)
