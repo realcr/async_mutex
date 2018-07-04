@@ -12,6 +12,12 @@ pub struct AsyncMutex<T> {
     data: marker::PhantomData<Inner<T>>,
 }
 
+impl<T> Clone for AsyncMutex<T> {
+    fn clone(&self) -> AsyncMutex<T> {
+        unimplemented!()
+    }
+}
+
 impl<T> AsyncMutex<T> {
     pub fn new(_resource: T) -> AsyncMutex<T> {
         unimplemented!()
@@ -122,4 +128,29 @@ mod tests {
         assert_eq!(core.run(task).unwrap(), N + 1);
     }
 
+    #[test]
+    fn nested() {
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task = async_mutex
+            .clone()
+            .acquire(move |num_cell| -> Result<_, ()> {
+                num_cell.num += 1;
+
+                let nested_task = async_mutex.acquire(|num_cell| -> Result<_, ()> {
+                    assert_eq!(num_cell.num, 1);
+                    num_cell.num += 1;
+                    Ok(())
+                });
+                handle.spawn(nested_task.map_err(|_| ()));
+
+                let num = num_cell.num;
+                Ok(num)
+            });
+
+        assert_eq!(core.run(task).unwrap(), 1);
+    }
 }
