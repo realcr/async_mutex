@@ -153,4 +153,23 @@ mod tests {
 
         assert_eq!(core.run(task).unwrap(), 1);
     }
+
+    #[test]
+    fn error() {
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task1 = async_mutex.acquire(|_| -> Result<(), _> { Err(()) });
+
+        assert!(core.run(task1).is_err());
+
+        let task2 = async_mutex.acquire(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            let num = num_cell.num;
+            Ok(num)
+        });
+
+        assert_eq!(core.run(task2).unwrap(), 1);
+    }
 }
