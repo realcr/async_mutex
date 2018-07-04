@@ -92,4 +92,34 @@ mod tests {
 
         assert_eq!(core.run(task2).unwrap(), 2);
     }
+
+    #[test]
+    fn multiple() {
+        const N: usize = 1_000;
+
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        for num in 0..N {
+            let task = async_mutex.acquire(move |num_cell| -> Result<(), ()> {
+                assert_eq!(num_cell.num, num);
+
+                num_cell.num += 1;
+                Ok(())
+            });
+
+            handle.spawn(task.map_err(|_| ()));
+        }
+
+        let task = async_mutex.acquire(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            let num = num_cell.num;
+            Ok(num)
+        });
+
+        assert_eq!(core.run(task).unwrap(), N + 1);
+    }
+
 }
