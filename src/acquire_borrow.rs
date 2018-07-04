@@ -15,11 +15,10 @@ impl<T> AsyncMutex<T> {
         unimplemented!()
     }
 
-    pub fn acquire<F, B, G, O, E>(&self, _f: F) -> AcquireFuture<T, F>
+    pub fn acquire<F, B, O, E>(&self, _f: F) -> AcquireFuture<T, F>
     where
         F: FnOnce(&mut T) -> B,
-        B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
-        G: Future<Item = O, Error = E>,
+        B: IntoFuture<Item = O, Error = E>,
     {
         unimplemented!()
     }
@@ -33,11 +32,10 @@ pub enum AsyncMutexError<E> {
     Other(E),
 }
 
-impl<T, F, G, O, E, B> Future for AcquireFuture<T, F>
+impl<T, F, B, O, E> Future for AcquireFuture<T, F>
 where
     F: FnOnce(&mut T) -> B,
-    B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
-    G: Future<Item = O, Error = E>
+    B: IntoFuture<Item = O, Error = E>,
 {
     type Item = O;
     type Error = AsyncMutexError<E>;
