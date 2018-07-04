@@ -13,6 +13,8 @@ use futures::sync::oneshot;
 
 use std::collections::LinkedList;
 
+pub mod acquire_borrow;
+
 #[derive(Debug)]
 enum ResourceState<T> {
     Empty,
