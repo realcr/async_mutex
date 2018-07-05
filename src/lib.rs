@@ -2,9 +2,9 @@ extern crate futures;
 #[macro_use]
 extern crate log;
 #[cfg(test)]
-extern crate tokio_core;
-#[cfg(test)]
 extern crate tokio;
+#[cfg(test)]
+extern crate tokio_core;
 
 use std::cell::RefCell;
 use std::mem;
@@ -77,6 +77,7 @@ impl<E> From<E> for AsyncMutexError<E> {
 
 #[derive(Debug)]
 enum AcquireFutureState<T, F, G> {
+    NotPolled(F),
     WaitResource((oneshot::Receiver<T>, F)),
     WaitFunction(G),
     Broken,
@@ -115,30 +116,9 @@ impl<T> AsyncMutex<T> {
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
-        let resource = mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty);
-        match resource {
-            ResourceState::Empty => unreachable!(),
-            ResourceState::Pending(mut awakeners) => {
-                let (awakener, waiter) = oneshot::channel::<T>();
-                awakeners.push_back(awakener);
-                self.inner.borrow_mut().resource = ResourceState::Pending(awakeners);
-
-                AcquireFuture {
-                    inner: Rc::clone(&self.inner),
-                    state: AcquireFutureState::WaitResource((waiter, f)),
-                }
-            }
-            ResourceState::Present(t) => {
-                self.inner.borrow_mut().resource = ResourceState::Pending(LinkedList::new());
-                AcquireFuture {
-                    inner: Rc::clone(&self.inner),
-                    state: AcquireFutureState::WaitFunction(f(t).into_future()),
-                }
-            }
-            ResourceState::Broken => AcquireFuture {
-                inner: Rc::clone(&self.inner),
-                state: AcquireFutureState::Broken,
-            },
+        AcquireFuture {
+            inner: Rc::clone(&self.inner),
+            state: AcquireFutureState::NotPolled(f),
         }
     }
 }
@@ -157,6 +137,26 @@ where
         loop {
             match mem::replace(&mut self.state, AcquireFutureState::Empty) {
                 AcquireFutureState::Empty => unreachable!(),
+                AcquireFutureState::NotPolled(f) => {
+                    let resource = mem::replace(&mut inner.resource, ResourceState::Empty);
+                    match resource {
+                        ResourceState::Empty => unreachable!(),
+                        ResourceState::Pending(mut awakeners) => {
+                            let (awakener, waiter) = oneshot::channel::<T>();
+                            awakeners.push_back(awakener);
+                            inner.resource = ResourceState::Pending(awakeners);
+                            self.state = AcquireFutureState::WaitResource((waiter, f));
+                        }
+                        ResourceState::Present(t) => {
+                            inner.resource = ResourceState::Pending(LinkedList::new());
+                            self.state = AcquireFutureState::WaitFunction(f(t).into_future());
+                        }
+                        ResourceState::Broken => {
+                            inner.resource = ResourceState::Broken;
+                            self.state = AcquireFutureState::Broken;
+                        }
+                    }
+                }
                 AcquireFutureState::Broken => {
                     return Err(AsyncMutexError::ResourceBroken);
                 }
@@ -349,13 +349,13 @@ mod tests {
 
     #[test]
     fn deadlock() {
-        use tokio::timer::Deadline;
         use std::time::Duration;
         use std::time::Instant;
+        use tokio::timer::Deadline;
 
         let mut core = Core::new().unwrap();
 
-        let async_mutex = AsyncMutex::new(NumCell { num: 0});
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task0 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
             num_cell.num += 1;
