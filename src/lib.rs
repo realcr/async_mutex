@@ -2,8 +2,6 @@ extern crate futures;
 #[macro_use]
 extern crate log;
 #[cfg(test)]
-extern crate tokio;
-#[cfg(test)]
 extern crate tokio_core;
 
 use std::cell::RefCell;
@@ -229,8 +227,6 @@ mod tests {
     #[test]
     fn simple() {
         let mut core = Core::new().unwrap();
-        let handle = core.handle();
-
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task1 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
@@ -238,7 +234,7 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        handle.spawn(task1.map_err(|_| ()));
+        assert_eq!(core.run(task1).unwrap(), ());
 
         {
             let _ = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
@@ -267,7 +263,6 @@ mod tests {
         const N: usize = 1_000;
 
         let mut core = Core::new().unwrap();
-        let handle = core.handle();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -279,7 +274,7 @@ mod tests {
                 Ok((num_cell, ()))
             });
 
-            handle.spawn(task.map_err(|_| ()));
+            assert_eq!(core.run(task).unwrap(), ());
         }
 
         let task = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
@@ -349,10 +344,6 @@ mod tests {
 
     #[test]
     fn deadlock() {
-        use std::time::Duration;
-        use std::time::Instant;
-        use tokio::timer::Deadline;
-
         let mut core = Core::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
@@ -372,12 +363,8 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        fn timeout() -> Instant {
-            Instant::now() + Duration::from_secs(1)
-        }
-
         core.run(task0).unwrap();
-        core.run(Deadline::new(task2, timeout())).unwrap();
-        core.run(Deadline::new(task1, timeout())).unwrap();
+        core.run(task2).unwrap();
+        core.run(task1).unwrap();
     }
 }
