@@ -1,26 +1,48 @@
+use std::cell::RefCell;
 use std::marker;
+use std::rc::Rc;
 
 use futures::prelude::*;
+use futures::sync::oneshot;
+
+use std::collections::LinkedList;
+
+#[derive(Debug, Default)]
+struct Awakener {
+    queue: LinkedList<oneshot::Sender<()>>,
+}
+
+impl Awakener {
+    fn wakeup_next(&mut self) {}
+}
 
 #[derive(Debug)]
 struct Inner<T> {
-    data: marker::PhantomData<T>,
+    resource: T,
+    awakeners: Awakener,
 }
 
 #[derive(Debug)]
 pub struct AsyncMutex<T> {
-    data: marker::PhantomData<Inner<T>>,
+    inner: Rc<RefCell<Inner<T>>>,
 }
 
 impl<T> Clone for AsyncMutex<T> {
     fn clone(&self) -> AsyncMutex<T> {
-        unimplemented!()
+        AsyncMutex {
+            inner: Rc::clone(&self.inner),
+        }
     }
 }
 
 impl<T> AsyncMutex<T> {
-    pub fn new(_resource: T) -> AsyncMutex<T> {
-        unimplemented!()
+    pub fn new(resource: T) -> AsyncMutex<T> {
+        let inner = Rc::new(RefCell::new(Inner {
+            resource: resource,
+            awakeners: Default::default(),
+        }));
+
+        AsyncMutex { inner }
     }
 
     pub fn acquire<F, B, O, E>(&self, _f: F) -> AcquireFuture<T, F>
