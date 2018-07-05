@@ -3,6 +3,8 @@ extern crate futures;
 extern crate log;
 #[cfg(test)]
 extern crate tokio_core;
+#[cfg(test)]
+extern crate tokio;
 
 use std::cell::RefCell;
 use std::mem;
@@ -343,5 +345,39 @@ mod tests {
 
         assert!(core.run(task3).is_err());
         assert!(core.run(task4).is_err());
+    }
+
+    #[test]
+    fn deadlock() {
+        use tokio::timer::Deadline;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0});
+
+        let task0 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+            num_cell.num += 1;
+            Ok((num_cell, ()))
+        });
+
+        let task1 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+            num_cell.num += 1;
+            Ok((num_cell, ()))
+        });
+
+        let task2 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+            num_cell.num += 1;
+            Ok((num_cell, ()))
+        });
+
+        fn timeout() -> Instant {
+            Instant::now() + Duration::from_secs(1)
+        }
+
+        core.run(task0).unwrap();
+        core.run(Deadline::new(task2, timeout())).unwrap();
+        core.run(Deadline::new(task1, timeout())).unwrap();
     }
 }
