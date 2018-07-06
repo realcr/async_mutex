@@ -171,22 +171,22 @@ where
             match mem::replace(&mut self.state, AcquireFutureState::Empty) {
                 AcquireFutureState::Empty => unreachable!(),
                 AcquireFutureState::NotPolled(f) => {
-                    let mut inner = self.inner.borrow_mut();
-                    let resource = mem::replace(&mut inner.resource, ResourceState::Empty);
+                    let resource =
+                        mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty);
                     match resource {
                         ResourceState::Empty => unreachable!(),
                         ResourceState::Pending(mut awakeners) => {
                             let (awakener, waiter) = oneshot::channel::<T>();
                             awakeners.push_back(awakener);
-                            inner.resource = ResourceState::Pending(awakeners);
+                            self.inner.borrow_mut().resource = ResourceState::Pending(awakeners);
                             self.state = AcquireFutureState::WaitResource((waiter, f));
                         }
                         ResourceState::Present(t) => {
-                            inner.resource = ResourceState::Pending(LinkedList::new());
+                            self.inner.borrow_mut().resource = ResourceState::Pending(LinkedList::new());
                             self.state = AcquireFutureState::WaitFunction(f(t).into_future());
                         }
                         ResourceState::Broken => {
-                            inner.resource = ResourceState::Broken;
+                            self.inner.borrow_mut().resource = ResourceState::Broken;
                             self.state = AcquireFutureState::Broken;
                         }
                     }
@@ -215,24 +215,22 @@ where
                         }
                     }
                 }
-                AcquireFutureState::WaitFunction(mut f) => {
-                    match f.poll() {
-                        Err((resource, acquirer_error)) => {
-                            return self.function_error((resource, acquirer_error));
-                        }
-                        Ok(Async::NotReady) => {
-                            trace!("AcquireFuture::WaitFunction -- NotReady");
-
-                            self.state = AcquireFutureState::WaitFunction(f);
-                            return Ok(Async::NotReady);
-                        }
-                        Ok(Async::Ready((resource, output))) => {
-                            trace!("AcquireFuture::WaitFunction -- Ready");
-
-                            return self.function_ready((resource, output));
-                        }
+                AcquireFutureState::WaitFunction(mut f) => match f.poll() {
+                    Err((resource, acquirer_error)) => {
+                        return self.function_error((resource, acquirer_error));
                     }
-                }
+                    Ok(Async::NotReady) => {
+                        trace!("AcquireFuture::WaitFunction -- NotReady");
+
+                        self.state = AcquireFutureState::WaitFunction(f);
+                        return Ok(Async::NotReady);
+                    }
+                    Ok(Async::Ready((resource, output))) => {
+                        trace!("AcquireFuture::WaitFunction -- Ready");
+
+                        return self.function_ready((resource, output));
+                    }
+                },
             }
         }
     }
