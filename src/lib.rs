@@ -183,7 +183,7 @@ where
                         }
                         ResourceState::Present(t) => {
                             self.inner.borrow_mut().resource = ResourceState::Pending(LinkedList::new());
-                            self.state = AcquireFutureState::WaitFunction(f(t).into_future());
+                            self.resource_ready((t, f))
                         }
                         ResourceState::Broken => {
                             self.inner.borrow_mut().resource = ResourceState::Broken;
