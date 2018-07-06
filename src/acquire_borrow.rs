@@ -13,7 +13,7 @@ struct Awakener {
 }
 
 impl Awakener {
-    fn wakeup_next(&mut self) {}
+    // fn wakeup_next(&mut self) {}
 }
 
 #[derive(Debug)]

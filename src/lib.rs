@@ -123,6 +123,31 @@ impl<T> AsyncMutex<T> {
     }
 }
 
+trait Transform<T, F, G: Future> {
+    fn resource_ready(&mut self, inner: &mut Inner<T>, arg: (T, F));
+    fn function_ready(&mut self, inner: &mut Inner<T>, arg: G::Item);
+    fn function_error(&mut self, inner: &mut Inner<T>, arg: G::Error);
+}
+
+impl<T, F, B, G, E, O> Transform<T, F, G> for AcquireFuture<T, F, G>
+where
+    F: FnOnce(T) -> B,
+    G: Future<Item = (T, O), Error = (Option<T>, E)>,
+    B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
+{
+    fn resource_ready(&mut self, inner: &mut Inner<T>, arg: (T, F)) {
+        unimplemented!()
+    }
+
+    fn function_ready(&mut self, inner: &mut Inner<T>, arg: G::Item) {
+        unimplemented!()
+    }
+
+    fn function_error(&mut self, inner: &mut Inner<T>, arg: G::Error) {
+        unimplemented!()
+    }
+}
+
 impl<T, F, B, G, E, O> Future for AcquireFuture<T, F, G>
 where
     F: FnOnce(T) -> B,
