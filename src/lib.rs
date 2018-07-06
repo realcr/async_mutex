@@ -124,9 +124,10 @@ impl<T> AsyncMutex<T> {
 }
 
 trait Transform<T, F, G: Future> {
-    fn resource_ready(&mut self, inner: &mut Inner<T>, arg: (T, F));
-    fn function_ready(&mut self, inner: &mut Inner<T>, arg: G::Item);
-    fn function_error(&mut self, inner: &mut Inner<T>, arg: G::Error);
+    type Return;
+    fn resource_ready(&mut self, arg: (T, F));
+    fn function_ready(&mut self, arg: G::Item) -> Self::Return;
+    fn function_error(&mut self, arg: G::Error) -> Self::Return;
 }
 
 impl<T, F, B, G, E, O> Transform<T, F, G> for AcquireFuture<T, F, G>
@@ -135,16 +136,24 @@ where
     G: Future<Item = (T, O), Error = (Option<T>, E)>,
     B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
 {
-    fn resource_ready(&mut self, inner: &mut Inner<T>, arg: (T, F)) {
-        unimplemented!()
+    type Return = Poll<O, AsyncMutexError<E>>;
+    fn resource_ready(&mut self, (t, f): (T, F)) {
+        self.state = AcquireFutureState::WaitFunction(f(t).into_future());
     }
 
-    fn function_ready(&mut self, inner: &mut Inner<T>, arg: G::Item) {
-        unimplemented!()
+    fn function_ready(&mut self, (resource, output): G::Item) -> Self::Return {
+        self.inner.borrow_mut().wakeup_next(resource);
+        Ok(Async::Ready(output))
     }
 
-    fn function_error(&mut self, inner: &mut Inner<T>, arg: G::Error) {
-        unimplemented!()
+    fn function_error(&mut self, (resource, acquirer_error): G::Error) -> Self::Return {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(resource) = resource {
+            inner.wakeup_next(resource);
+        } else {
+            inner.resource = ResourceState::Broken;
+        }
+        return Err(AsyncMutexError::Function(acquirer_error));
     }
 }
 
@@ -196,7 +205,7 @@ where
                         Async::Ready(t) => {
                             trace!("AcquireFuture::WaitResource -- Ready");
 
-                            self.state = AcquireFutureState::WaitFunction(f(t).into_future());
+                            self.resource_ready((t, f))
                         }
                         Async::NotReady => {
                             trace!("AcquireFuture::WaitResource -- NotReady");
@@ -209,13 +218,7 @@ where
                 AcquireFutureState::WaitFunction(mut f) => {
                     match f.poll() {
                         Err((resource, acquirer_error)) => {
-                            let mut inner = self.inner.borrow_mut();
-                            if let Some(resource) = resource {
-                                inner.wakeup_next(resource);
-                            } else {
-                                inner.resource = ResourceState::Broken;
-                            }
-                            return Err(AsyncMutexError::Function(acquirer_error));
+                            return self.function_error((resource, acquirer_error));
                         }
                         Ok(Async::NotReady) => {
                             trace!("AcquireFuture::WaitFunction -- NotReady");
@@ -226,8 +229,7 @@ where
                         Ok(Async::Ready((resource, output))) => {
                             trace!("AcquireFuture::WaitFunction -- Ready");
 
-                            self.inner.borrow_mut().wakeup_next(resource);
-                            return Ok(Async::Ready(output));
+                            return self.function_ready((resource, output));
                         }
                     }
                 }
