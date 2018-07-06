@@ -87,6 +87,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn simple() {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
@@ -122,6 +123,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn multiple() {
         const N: usize = 1_000;
 
@@ -151,6 +153,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn nested() {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
@@ -177,6 +180,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn error() {
         let mut core = Core::new().unwrap();
 

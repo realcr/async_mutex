@@ -182,21 +182,22 @@ where
                     }
                 }
                 AcquireFutureState::WaitFunction(mut f) => {
-                    match f.poll().map_err(|(resource, acquirer_error)| {
-                        if let Some(resource) = resource {
-                            inner.wakeup_next(resource);
-                        } else {
-                            inner.resource = ResourceState::Broken;
+                    match f.poll() {
+                        Err((resource, acquirer_error)) => {
+                            if let Some(resource) = resource {
+                                inner.wakeup_next(resource);
+                            } else {
+                                inner.resource = ResourceState::Broken;
+                            }
+                            return Err(AsyncMutexError::Function(acquirer_error));
                         }
-                        acquirer_error
-                    })? {
-                        Async::NotReady => {
+                        Ok(Async::NotReady) => {
                             trace!("AcquireFuture::WaitFunction -- NotReady");
 
                             self.state = AcquireFutureState::WaitFunction(f);
                             return Ok(Async::NotReady);
                         }
-                        Async::Ready((resource, output)) => {
+                        Ok(Async::Ready((resource, output))) => {
                             trace!("AcquireFuture::WaitFunction -- Ready");
 
                             inner.wakeup_next(resource);
