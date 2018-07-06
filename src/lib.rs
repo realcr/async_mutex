@@ -158,11 +158,11 @@ where
     type Error = AsyncMutexError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut inner = self.inner.borrow_mut();
         loop {
             match mem::replace(&mut self.state, AcquireFutureState::Empty) {
                 AcquireFutureState::Empty => unreachable!(),
                 AcquireFutureState::NotPolled(f) => {
+                    let mut inner = self.inner.borrow_mut();
                     let resource = mem::replace(&mut inner.resource, ResourceState::Empty);
                     match resource {
                         ResourceState::Empty => unreachable!(),
@@ -186,7 +186,7 @@ where
                     return Err(AsyncMutexError::ResourceBroken);
                 }
                 AcquireFutureState::WaitResource((mut waiter, f)) => {
-                    if let ResourceState::Broken = inner.resource {
+                    if let ResourceState::Broken = self.inner.borrow().resource {
                         return Err(AsyncMutexError::ResourceBroken);
                     }
                     match waiter
@@ -209,6 +209,7 @@ where
                 AcquireFutureState::WaitFunction(mut f) => {
                     match f.poll() {
                         Err((resource, acquirer_error)) => {
+                            let mut inner = self.inner.borrow_mut();
                             if let Some(resource) = resource {
                                 inner.wakeup_next(resource);
                             } else {
@@ -225,7 +226,7 @@ where
                         Ok(Async::Ready((resource, output))) => {
                             trace!("AcquireFuture::WaitFunction -- Ready");
 
-                            inner.wakeup_next(resource);
+                            self.inner.borrow_mut().wakeup_next(resource);
                             return Ok(Async::Ready(output));
                         }
                     }
