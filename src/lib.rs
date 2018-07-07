@@ -130,7 +130,7 @@ impl<T> AsyncMutex<T> {
     pub fn acquire_borrow<F, B, E, G, O>(&self, f: F) -> AcquireFuture<T, F, G, Borrow>
     where
         F: FnOnce(&mut T) -> B,
-        G: Future<Item = (T, O), Error = (Option<T>, E)>,
+        G: Future<Item = O, Error = E>,
         B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
     {
         AcquireFuture {
@@ -470,4 +470,112 @@ mod tests {
         core.run(task2).unwrap();
         core.run(task1).unwrap();
     }
+
+    #[test]
+    fn borrow_simple() {
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task1 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            Ok(())
+        });
+
+        core.run(task1).unwrap();
+
+        {
+            let _ = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+                num_cell.num += 1;
+                Ok(())
+            });
+
+            let _ = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+                num_cell.num += 1;
+                Ok(())
+            });
+        }
+
+        let task2 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            let num = num_cell.num;
+            Ok(num)
+        });
+
+        assert_eq!(core.run(task2).unwrap(), 2);
+    }
+
+    #[test]
+    fn borrow_multiple() {
+        const N: usize = 1_000;
+
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        for num in 0..N {
+            let task = async_mutex.acquire_borrow(move |num_cell| -> Result<_, ()> {
+                assert_eq!(num_cell.num, num);
+
+                num_cell.num += 1;
+                Ok(())
+            });
+
+            core.run(task).unwrap()
+        }
+
+        let task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            let num = num_cell.num;
+            Ok(num)
+        });
+
+        assert_eq!(core.run(task).unwrap(), N + 1);
+    }
+
+    #[test]
+    fn borrow_nested() {
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task = async_mutex
+            .clone()
+            .acquire_borrow(move |num_cell| -> Result<_, ()> {
+                num_cell.num += 1;
+
+                let nested_task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+                    assert_eq!(num_cell.num, 1);
+                    num_cell.num += 1;
+                    Ok(())
+                });
+                handle.spawn(nested_task.map_err(|_| ()));
+
+                let num = num_cell.num;
+                Ok(num)
+            });
+
+        assert_eq!(core.run(task).unwrap(), 1);
+    }
+
+    #[test]
+    fn borrow_error() {
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task1 = async_mutex.acquire_borrow(|_| -> Result<(), _> { Err(()) });
+
+        assert!(core.run(task1).is_err());
+
+        let task2 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            let num = num_cell.num;
+            Ok(num)
+        });
+
+        assert_eq!(core.run(task2).unwrap(), 1);
+    }
+
 }
