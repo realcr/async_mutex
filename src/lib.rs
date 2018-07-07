@@ -86,10 +86,14 @@ enum AcquireFutureState<T, F, G> {
 
 #[derive(Debug)]
 #[must_use = "futures do nothing unless polled"]
-pub struct AcquireFuture<T, F, G> {
+pub struct AcquireFuture<T, F, G, A> {
     inner: Rc<RefCell<Inner<T>>>,
     state: AcquireFutureState<T, F, G>,
+    marker: std::marker::PhantomData<A>,
 }
+
+pub struct Move;
+pub struct Borrow;
 
 impl<T> AsyncMutex<T> {
     /// Create a new **single threading** shared mutex resource.
@@ -110,7 +114,7 @@ impl<T> AsyncMutex<T> {
     /// `(None, e)`, or give back the resource by returning `(Some(res), e)`.
     ///
     /// This function returns a future that resolves to the value given at output.
-    pub fn acquire<F, B, E, G, O>(&self, f: F) -> AcquireFuture<T, F, G>
+    pub fn acquire<F, B, E, G, O>(&self, f: F) -> AcquireFuture<T, F, G, Move>
     where
         F: FnOnce(T) -> B,
         G: Future<Item = (T, O), Error = (Option<T>, E)>,
@@ -119,11 +123,12 @@ impl<T> AsyncMutex<T> {
         AcquireFuture {
             inner: Rc::clone(&self.inner),
             state: AcquireFutureState::NotPolled(f),
+            marker: Default::default(),
         }
     }
 }
 
-impl<T, F, B, G, E, O> Future for AcquireFuture<T, F, G>
+impl<T, F, B, G, E, O> Future for AcquireFuture<T, F, G, Move>
 where
     F: FnOnce(T) -> B,
     G: Future<Item = (T, O), Error = (Option<T>, E)>,
