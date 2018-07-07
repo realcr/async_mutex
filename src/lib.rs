@@ -126,6 +126,102 @@ impl<T> AsyncMutex<T> {
             marker: Default::default(),
         }
     }
+
+    pub fn acquire_borrow<F, B, E, G, O>(&self, f: F) -> AcquireFuture<T, F, G, Borrow>
+    where
+        F: FnOnce(&mut T) -> B,
+        G: Future<Item = (T, O), Error = (Option<T>, E)>,
+        B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
+    {
+        AcquireFuture {
+            inner: Rc::clone(&self.inner),
+            state: AcquireFutureState::NotPolled(f),
+            marker: Default::default(),
+        }
+    }
+}
+
+impl<T, F, B, G, E, O> Future for AcquireFuture<T, F, G, Borrow>
+where
+    F: FnOnce(&mut T) -> B,
+    G: Future<Item = O, Error = E>,
+    B: IntoFuture<Item = G::Item, Error = G::Error, Future = G>,
+{
+    type Item = O;
+    type Error = AsyncMutexError<E>;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            match mem::replace(&mut self.state, AcquireFutureState::Empty) {
+                AcquireFutureState::Empty => unreachable!(),
+                AcquireFutureState::NotPolled(f) => {
+                    let resource =
+                        mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty);
+                    match resource {
+                        ResourceState::Empty => unreachable!(),
+                        ResourceState::Pending(mut awakeners) => {
+                            let mut inner = self.inner.borrow_mut();
+                            let (awakener, waiter) = oneshot::channel::<T>();
+                            awakeners.push_back(awakener);
+                            inner.resource = ResourceState::Pending(awakeners);
+                            self.state = AcquireFutureState::WaitResource((waiter, f));
+                        }
+                        ResourceState::Present(mut t) => {
+                            self.inner.borrow_mut().resource =
+                                ResourceState::Pending(LinkedList::new());
+                            self.state = AcquireFutureState::WaitFunction(f(&mut t).into_future());
+                            self.inner.borrow_mut().wakeup_next(t);
+                        }
+                        ResourceState::Broken => {
+                            self.inner.borrow_mut().resource = ResourceState::Broken;
+                            self.state = AcquireFutureState::Broken;
+                        }
+                    }
+                }
+                AcquireFutureState::Broken => {
+                    return Err(AsyncMutexError::ResourceBroken);
+                }
+                AcquireFutureState::WaitResource((mut waiter, f)) => {
+                    if let ResourceState::Broken = self.inner.borrow().resource {
+                        return Err(AsyncMutexError::ResourceBroken);
+                    }
+                    match waiter
+                        .poll()
+                        .map_err(|_| AsyncMutexError::AwakenerCanceled)?
+                    {
+                        Async::Ready(mut t) => {
+                            trace!("AcquireFuture::WaitResource -- Ready");
+
+                            self.state = AcquireFutureState::WaitFunction(f(&mut t).into_future());
+                            self.inner.borrow_mut().wakeup_next(t);
+                        }
+                        Async::NotReady => {
+                            trace!("AcquireFuture::WaitResource -- NotReady");
+
+                            self.state = AcquireFutureState::WaitResource((waiter, f));
+                            return Ok(Async::NotReady);
+                        }
+                    }
+                }
+                AcquireFutureState::WaitFunction(mut f) => match f.poll() {
+                    Err(acquirer_error) => {
+                        return Err(AsyncMutexError::Function(acquirer_error));
+                    }
+                    Ok(Async::NotReady) => {
+                        trace!("AcquireFuture::WaitFunction -- NotReady");
+
+                        self.state = AcquireFutureState::WaitFunction(f);
+                        return Ok(Async::NotReady);
+                    }
+                    Ok(Async::Ready(output)) => {
+                        trace!("AcquireFuture::WaitFunction -- Ready");
+
+                        return Ok(Async::Ready(output));
+                    }
+                },
+            }
+        }
+    }
 }
 
 impl<T, F, B, G, E, O> Future for AcquireFuture<T, F, G, Move>
