@@ -240,20 +240,22 @@ where
                 AcquireFutureState::NotPolled(f) => {
                     let resource =
                         mem::replace(&mut self.inner.borrow_mut().resource, ResourceState::Empty);
-                    let mut inner = self.inner.borrow_mut();
                     match resource {
                         ResourceState::Empty => unreachable!(),
                         ResourceState::Pending(mut awakeners) => {
+                            let mut inner = self.inner.borrow_mut();
                             let (awakener, waiter) = oneshot::channel::<T>();
                             awakeners.push_back(awakener);
                             inner.resource = ResourceState::Pending(awakeners);
                             self.state = AcquireFutureState::WaitResource((waiter, f));
                         }
                         ResourceState::Present(t) => {
-                            inner.resource = ResourceState::Pending(LinkedList::new());
+                            self.inner.borrow_mut().resource =
+                                ResourceState::Pending(LinkedList::new());
                             self.state = AcquireFutureState::WaitFunction(f(t).into_future());
                         }
                         ResourceState::Broken => {
+                            let mut inner = self.inner.borrow_mut();
                             inner.resource = ResourceState::Broken;
                             self.state = AcquireFutureState::Broken;
                         }
@@ -392,7 +394,6 @@ mod tests {
     #[test]
     fn nested() {
         let mut core = Core::new().unwrap();
-        let handle = core.handle();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -401,12 +402,12 @@ mod tests {
             .acquire(move |mut num_cell| -> Result<_, (_, ())> {
                 num_cell.num += 1;
 
-                let nested_task = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+                let mut nested_task = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
                     assert_eq!(num_cell.num, 1);
                     num_cell.num += 1;
                     Ok((num_cell, ()))
                 });
-                handle.spawn(nested_task.map_err(|_| ()));
+                assert_eq!(nested_task.poll().unwrap(), Async::NotReady);
 
                 let num = num_cell.num;
                 Ok((num_cell, num))
@@ -536,7 +537,6 @@ mod tests {
     #[test]
     fn borrow_nested() {
         let mut core = Core::new().unwrap();
-        let handle = core.handle();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -545,12 +545,12 @@ mod tests {
             .acquire_borrow(move |num_cell| -> Result<_, ()> {
                 num_cell.num += 1;
 
-                let nested_task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+                let mut nested_task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
                     assert_eq!(num_cell.num, 1);
                     num_cell.num += 1;
                     Ok(())
                 });
-                handle.spawn(nested_task.map_err(|_| ()));
+                assert_eq!(nested_task.poll().unwrap(), Async::NotReady);
 
                 let num = num_cell.num;
                 Ok(num)
@@ -601,9 +601,7 @@ mod tests {
 
         core.run((task1, task2, task3).into_future()).unwrap();
 
-        let task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
-            Ok(num_cell.num)
-        });
+        let task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> { Ok(num_cell.num) });
 
         assert_eq!(core.run(task).unwrap(), 3);
     }
