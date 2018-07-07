@@ -578,4 +578,33 @@ mod tests {
         assert_eq!(core.run(task2).unwrap(), 1);
     }
 
+    #[test]
+    fn mixed() {
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task1 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+            num_cell.num += 1;
+            Ok((num_cell, ()))
+        });
+
+        let task2 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            Ok(())
+        });
+
+        let task3 = async_mutex.acquire(move |mut num_cell| -> Result<_, (_, ())> {
+            num_cell.num += 1;
+            Ok((num_cell, ()))
+        });
+
+        core.run((task1, task2, task3).into_future()).unwrap();
+
+        let task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            Ok(num_cell.num)
+        });
+
+        assert_eq!(core.run(task).unwrap(), 3);
+    }
 }
