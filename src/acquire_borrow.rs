@@ -70,14 +70,13 @@ impl<T> AsyncMutex<T> {
     {
         WaitPoll {
             inner: Rc::clone(&self.inner),
-            f: Some(f),
             marker: Default::default(),
-        }.and_then(|(inner, f, receiver)| {
+        }.and_then(|(inner, receiver)| {
             // Wait until we receive the resource via `receiver`
-            (future::ok(inner), future::ok(f), receiver)
+            (future::ok(inner), receiver)
                 .into_future()
                 .map_err(|_| AsyncMutexError::AwakenerCanceled)
-        }).and_then(|(inner, f, mut t)| {
+        }).and_then(move |(inner, mut t)| {
             // The resource is received.
             let result = f(&mut t);
             wakeup_next(inner, t);
@@ -112,14 +111,13 @@ fn wakeup_next<T>(inner: Rc<RefCell<Inner<T>>>, t: T) {
 /// This struct is introduced so that `AsyncMutex::acquire_borrow`
 /// will so nothing unless polled.
 #[derive(Debug)]
-struct WaitPoll<T, F, E> {
+struct WaitPoll<T, E> {
     inner: Rc<RefCell<Inner<T>>>,
-    f: Option<F>,
     marker: PhantomData<E>,
 }
 
-impl<T, F, E> Future for WaitPoll<T, F, E> {
-    type Item = (Rc<RefCell<Inner<T>>>, F, oneshot::Receiver<T>);
+impl<T, E> Future for WaitPoll<T, E> {
+    type Item = (Rc<RefCell<Inner<T>>>, oneshot::Receiver<T>);
     type Error = AsyncMutexError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -153,7 +151,6 @@ impl<T, F, E> Future for WaitPoll<T, F, E> {
 
         Ok(Async::Ready((
             Rc::clone(&self.inner),
-            self.f.take().unwrap(),
             receiver,
         )))
     }
