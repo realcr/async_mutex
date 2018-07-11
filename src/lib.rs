@@ -62,7 +62,7 @@ pub struct AsyncMutex<T> {
     inner: Rc<RefCell<Inner<T>>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AsyncMutexError<E> {
     AwakenerCanceled,
     ResourceBroken,
