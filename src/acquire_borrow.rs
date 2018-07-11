@@ -20,6 +20,9 @@ impl<T> Awakener<T> {
         }
     }
 
+    /// Try to send the resource.
+    /// Return `None` if succeed.
+    /// Return `Some(resource)` if failed.
     fn wakeup_next(&mut self, mut resource: T) -> Option<T> {
         while let Some(sender) = self.queue.pop_front() {
             resource = match sender.send(resource) {
@@ -30,6 +33,9 @@ impl<T> Awakener<T> {
         Some(resource)
     }
 
+    /// Make a pair of `(sender, receiver)`.
+    /// `sender` is pushed to `self.queue`.
+    /// Return `receiver`.
     fn add_awakener(&mut self) -> oneshot::Receiver<T> {
         let (sender, receiver) = oneshot::channel();
         self.queue.push_back(sender);
@@ -67,10 +73,12 @@ impl<T> AsyncMutex<T> {
             f: Some(f),
             marker: Default::default(),
         }.and_then(|(inner, f, receiver)| {
+            // Wait until we receive the resource via `receiver`
             (future::ok(inner), future::ok(f), receiver)
                 .into_future()
                 .map_err(|_| AsyncMutexError::AwakenerCanceled)
         }).and_then(|(inner, f, mut t)| {
+            // The resource is received.
             let result = f(&mut t);
             wakeup_next(inner, t);
             result.into_future().map_err(|e| AsyncMutexError::Function(e))
@@ -78,6 +86,7 @@ impl<T> AsyncMutex<T> {
     }
 }
 
+/// Call Awakener::wakeup_next(), and set the state accordingly
 fn wakeup_next<T>(inner: Rc<RefCell<Inner<T>>>, t: T) {
     let state = inner.replace(Inner::Empty);
     if let Inner::Pending(mut awakener) = state {
@@ -87,10 +96,21 @@ fn wakeup_next<T>(inner: Rc<RefCell<Inner<T>>>, t: T) {
         };
         inner.replace(next_state);
     } else {
+        // We are holding the resource in `t`,
+        // so it's impossible that the resource is also in `Inner::Present`
+        //
+        // T as a generic type is not clone-able nor copy-able,
+        // so this cannot happen.
         unreachable!()
     }
 }
 
+/// This struct is a future.
+/// It resolves immediately to `(inner, f, receiver)`,
+/// where `receiver` is a `oneshot::Receiver<T>`.
+///
+/// This struct is introduced so that `AsyncMutex::acquire_borrow`
+/// will so nothing unless polled.
 #[derive(Debug)]
 struct WaitPoll<T, F, E> {
     inner: Rc<RefCell<Inner<T>>>,
@@ -107,11 +127,14 @@ impl<T, F, E> Future for WaitPoll<T, F, E> {
 
         let receiver = match inner {
             Inner::Pending(mut awakener) => {
+                // Already in pending state, we just need to add a new awakener.
                 let receiver = awakener.add_awakener();
                 self.inner.replace(Inner::Pending(awakener));
                 receiver
             }
             Inner::Present(t) => {
+                // Resource is available,
+                // add a new awakener and then wake up it at once.
                 let mut awakener = Awakener::new();
                 let receiver = awakener.add_awakener();
                 match awakener.wakeup_next(t) {
