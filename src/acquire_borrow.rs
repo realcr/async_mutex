@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::marker::PhantomData;
 
 use futures::future;
 use futures::prelude::*;
@@ -56,7 +57,7 @@ impl<T> AsyncMutex<T> {
         }
     }
 
-    pub fn acquire_borrow<F, B, O, E>(&self, f: F) -> impl Future<Item = O, Error = AsyncMutexError>
+    pub fn acquire_borrow<F, B, O, E>(&self, f: F) -> impl Future<Item = O, Error = AsyncMutexError<E>>
     where
         F: FnOnce(&mut T) -> B,
         B: IntoFuture<Item = O, Error = E>,
@@ -64,37 +65,42 @@ impl<T> AsyncMutex<T> {
         WaitPoll {
             inner: Rc::clone(&self.inner),
             f: Some(f),
+            marker: Default::default(),
         }.and_then(|(inner, f, receiver)| {
             (future::ok(inner), future::ok(f), receiver)
                 .into_future()
                 .map_err(|_| AsyncMutexError::AwakenerCanceled)
         }).and_then(|(inner, f, mut t)| {
             let result = f(&mut t);
-            let state = inner.replace(Inner::Empty);
-            if let Inner::Pending(mut awakener) = state {
-                let next_state = match awakener.wakeup_next(t) {
-                    Some(t) => Inner::Present(t),
-                    None => Inner::Pending(awakener),
-                };
-                inner.replace(next_state);
-            } else {
-                unreachable!()
-            }
-
-            result.into_future().map_err(|_| AsyncMutexError::Other)
+            wakeup_next(inner, t);
+            result.into_future().map_err(|e| AsyncMutexError::Function(e))
         })
     }
 }
 
-#[derive(Debug)]
-struct WaitPoll<T, F> {
-    inner: Rc<RefCell<Inner<T>>>,
-    f: Option<F>,
+fn wakeup_next<T>(inner: Rc<RefCell<Inner<T>>>, t: T) {
+    let state = inner.replace(Inner::Empty);
+    if let Inner::Pending(mut awakener) = state {
+        let next_state = match awakener.wakeup_next(t) {
+            Some(t) => Inner::Present(t),
+            None => Inner::Pending(awakener),
+        };
+        inner.replace(next_state);
+    } else {
+        unreachable!()
+    }
 }
 
-impl<T, F> Future for WaitPoll<T, F> {
+#[derive(Debug)]
+struct WaitPoll<T, F, E> {
+    inner: Rc<RefCell<Inner<T>>>,
+    f: Option<F>,
+    marker: PhantomData<E>,
+}
+
+impl<T, F, E> Future for WaitPoll<T, F, E> {
     type Item = (Rc<RefCell<Inner<T>>>, F, oneshot::Receiver<T>);
-    type Error = AsyncMutexError;
+    type Error = AsyncMutexError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = self.inner.replace(Inner::Empty);
@@ -139,9 +145,9 @@ impl<T> Clone for AsyncMutex<T> {
 }
 
 #[derive(Debug)]
-pub enum AsyncMutexError {
+pub enum AsyncMutexError<E> {
     AwakenerCanceled,
-    Other,
+    Function(E),
 }
 
 #[cfg(test)]
@@ -239,4 +245,24 @@ mod tests {
 
         assert_eq!(core.run(task).unwrap(), 1);
     }
+
+    #[test]
+    fn borrow_error() {
+        let mut core = Core::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        let task1 = async_mutex.acquire_borrow(|_| -> Result<(), _> { Err(()) });
+
+        assert!(core.run(task1).is_err());
+
+        let task2 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
+            num_cell.num += 1;
+            let num = num_cell.num;
+            Ok(num)
+        });
+
+        assert_eq!(core.run(task2).unwrap(), 1);
+    }
+
 }
