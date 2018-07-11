@@ -80,7 +80,7 @@ impl<T> AsyncMutex<T> {
             // The resource is received.
             let result = f(&mut t);
             wakeup_next(inner, t);
-            result.into_future().map_err(|e| AsyncMutexError::Function(e))
+            result.into_future().map_err(AsyncMutexError::Function)
         })
     }
 }
@@ -284,5 +284,4 @@ mod tests {
 
         assert_eq!(core.run(task2).unwrap(), 1);
     }
-
 }
