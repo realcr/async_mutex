@@ -59,7 +59,6 @@ pub struct AsyncMutex<T> {
     inner: Rc<RefCell<Inner<T>>>,
 }
 
-
 impl<T> AsyncMutex<T> {
     pub fn new(resource: T) -> AsyncMutex<T> {
         AsyncMutex {
@@ -78,9 +77,7 @@ impl<T> AsyncMutex<T> {
             marker: Default::default(),
         }.and_then(|receiver| {
             // Wait until we receive the resource via `receiver`
-            receiver
-                .into_future()
-                .map_err(|_| AsyncMutexError::AwakenerCanceled)
+            receiver.map_err(|_| AsyncMutexError::AwakenerCanceled)
         }).and_then(move |mut t| {
             // The resource is received.
             let result = f(&mut t);
@@ -100,9 +97,7 @@ impl<T> AsyncMutex<T> {
             marker: Default::default(),
         }.and_then(|receiver| {
             // Wait until we receive the resource via `receiver`
-            receiver
-                .into_future()
-                .map_err(|_| AsyncMutexError::AwakenerCanceled)
+            receiver.map_err(|_| AsyncMutexError::AwakenerCanceled)
         }).and_then(move |t| {
             // The resource is received.
            f(t).into_future().then(move |result| match result {
