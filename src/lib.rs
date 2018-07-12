@@ -203,8 +203,7 @@ impl<T> Clone for AsyncMutex<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::AsyncMutex;
-    use tokio::prelude::*;
+    use super::*;
     use tokio::runtime::current_thread::Runtime;
 
     struct NumCell {
@@ -319,12 +318,12 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        assert!(runtime.block_on(task1).is_err());
+        assert_eq!(runtime.block_on(task1), Err(AsyncMutexError::Function(())));
 
         assert_eq!(runtime.block_on(task2).unwrap(), 1);
 
-        assert!(runtime.block_on(task3).is_err());
-        assert!(runtime.block_on(task4).is_err());
+        assert_eq!(runtime.block_on(task3), Err(AsyncMutexError::Function(())));
+        assert_eq!(runtime.block_on(task4), Err(AsyncMutexError::ResourceBroken));
     }
 
     #[test]
@@ -447,7 +446,7 @@ mod tests {
 
         let task1 = async_mutex.acquire_borrow(|_| -> Result<(), _> { Err(()) });
 
-        assert!(runtime.block_on(task1).is_err());
+        assert_eq!(runtime.block_on(task1), Err(AsyncMutexError::Function(())));
 
         let task2 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
             num_cell.num += 1;
