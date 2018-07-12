@@ -1,6 +1,6 @@
 extern crate futures;
 #[cfg(test)]
-extern crate tokio_core;
+extern crate tokio;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -203,8 +203,9 @@ impl<T> Clone for AsyncMutex<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tokio_core::reactor::Core;
+    use super::AsyncMutex;
+    use tokio::prelude::*;
+    use tokio::runtime::current_thread::Runtime;
 
     struct NumCell {
         num: usize,
@@ -212,7 +213,8 @@ mod tests {
 
     #[test]
     fn simple() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
+
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task1 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
@@ -220,7 +222,7 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        assert_eq!(core.run(task1).unwrap(), ());
+        assert_eq!(runtime.block_on(task1).unwrap(), ());
 
         {
             let _ = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
@@ -241,27 +243,25 @@ mod tests {
             Ok((num_cell, num))
         });
 
-        assert_eq!(core.run(task2).unwrap(), 2);
+        assert_eq!(runtime.block_on(task2).unwrap(), 2);
     }
 
     #[test]
     fn multiple() {
         const N: usize = 1_000;
 
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        for num in 0..N {
+        for _num in 0..N {
             let task = async_mutex.acquire(move |mut num_cell| -> Result<_, (_, ())> {
-                assert_eq!(num_cell.num, num);
-
                 num_cell.num += 1;
                 Ok((num_cell, ()))
             });
-
-            assert_eq!(core.run(task).unwrap(), ());
+            runtime.spawn(task.map_err(|_| ()));
         }
+        runtime.run().unwrap();
 
         let task = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
             num_cell.num += 1;
@@ -269,12 +269,12 @@ mod tests {
             Ok((num_cell, num))
         });
 
-        assert_eq!(core.run(task).unwrap(), N + 1);
+        assert_eq!(runtime.block_on(task).unwrap(), N + 1);
     }
 
     #[test]
     fn nested() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -294,12 +294,12 @@ mod tests {
                 Ok((num_cell, num))
             });
 
-        assert_eq!(core.run(task).unwrap(), 1);
+        assert_eq!(runtime.block_on(task).unwrap(), 1);
     }
 
     #[test]
     fn error() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -319,17 +319,17 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        assert!(core.run(task1).is_err());
+        assert!(runtime.block_on(task1).is_err());
 
-        assert_eq!(core.run(task2).unwrap(), 1);
+        assert_eq!(runtime.block_on(task2).unwrap(), 1);
 
-        assert!(core.run(task3).is_err());
-        assert!(core.run(task4).is_err());
+        assert!(runtime.block_on(task3).is_err());
+        assert!(runtime.block_on(task4).is_err());
     }
 
     #[test]
     fn deadlock() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -348,14 +348,14 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        core.run(task0).unwrap();
-        core.run(task2).unwrap();
-        core.run(task1).unwrap();
+        runtime.block_on(task0).unwrap();
+        runtime.block_on(task2).unwrap();
+        runtime.block_on(task1).unwrap();
     }
 
     #[test]
     fn borrow_simple() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -364,7 +364,7 @@ mod tests {
             Ok(())
         });
 
-        core.run(task1).unwrap();
+        runtime.block_on(task1).unwrap();
 
         {
             let _ = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
@@ -384,27 +384,26 @@ mod tests {
             Ok(num)
         });
 
-        assert_eq!(core.run(task2).unwrap(), 2);
+        assert_eq!(runtime.block_on(task2).unwrap(), 2);
     }
 
     #[test]
     fn borrow_multiple() {
         const N: usize = 1_000;
 
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        for num in 0..N {
+        for _ in 0..N {
             let task = async_mutex.acquire_borrow(move |num_cell| -> Result<_, ()> {
-                assert_eq!(num_cell.num, num);
-
                 num_cell.num += 1;
                 Ok(())
             });
-
-            core.run(task).unwrap()
+            runtime.spawn(task.map_err(|_| ()));
         }
+
+        runtime.run().unwrap();
 
         let task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
             num_cell.num += 1;
@@ -412,12 +411,12 @@ mod tests {
             Ok(num)
         });
 
-        assert_eq!(core.run(task).unwrap(), N + 1);
+        assert_eq!(runtime.block_on(task).unwrap(), N + 1);
     }
 
     #[test]
     fn borrow_nested() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -437,18 +436,18 @@ mod tests {
                 Ok(num)
             });
 
-        assert_eq!(core.run(task).unwrap(), 1);
+        assert_eq!(runtime.block_on(task).unwrap(), 1);
     }
 
     #[test]
     fn borrow_error() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task1 = async_mutex.acquire_borrow(|_| -> Result<(), _> { Err(()) });
 
-        assert!(core.run(task1).is_err());
+        assert!(runtime.block_on(task1).is_err());
 
         let task2 = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> {
             num_cell.num += 1;
@@ -456,12 +455,12 @@ mod tests {
             Ok(num)
         });
 
-        assert_eq!(core.run(task2).unwrap(), 1);
+        assert_eq!(runtime.block_on(task2).unwrap(), 1);
     }
 
     #[test]
     fn mixed() {
-        let mut core = Core::new().unwrap();
+        let mut runtime = Runtime::new().unwrap();
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
@@ -480,10 +479,10 @@ mod tests {
             Ok((num_cell, ()))
         });
 
-        core.run((task1, task2, task3).into_future()).unwrap();
+        runtime.block_on((task1, task2, task3).into_future()).unwrap();
 
         let task = async_mutex.acquire_borrow(|num_cell| -> Result<_, ()> { Ok(num_cell.num) });
 
-        assert_eq!(core.run(task).unwrap(), 3);
+        assert_eq!(runtime.block_on(task).unwrap(), 3);
     }
 }
