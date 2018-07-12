@@ -91,7 +91,8 @@ impl<T> AsyncMutex<T> {
         F: FnOnce(T) -> B,
         B: IntoFuture<Item = (T, O), Error = (Option<T>, E)>,
     {
-        let inner = Rc::clone(&self.inner);
+        let ok_inner = Rc::clone(&self.inner);
+        let err_inner = Rc::clone(&self.inner);
         WaitPoll {
             inner: Rc::clone(&self.inner),
             marker: Default::default(),
@@ -100,21 +101,18 @@ impl<T> AsyncMutex<T> {
             receiver.map_err(|_| AsyncMutexError::AwakenerCanceled)
         }).and_then(move |t| {
             // The resource is received.
-           f(t).into_future().then(move |result| match result {
-               Ok((resource, output)) => {
-                   wakeup_next(inner, resource);
-                   Ok(output)
-               }
-               Err((resource, error)) => {
-                   match resource {
-                       Some(r) => wakeup_next(inner, r),
-                       None => {
-                           inner.replace(Inner::Broken);
-                       }
-                   }
-                   Err(AsyncMutexError::Function(error))
-               }
-           })
+            f(t).into_future().map(move |(resource, output)| {
+                wakeup_next(ok_inner, resource);
+                output
+            }).map_err(move |(resource, error)| {
+                match resource {
+                    Some(r) => wakeup_next(err_inner, r),
+                    None => {
+                        err_inner.replace(Inner::Broken);
+                    }
+                }
+                AsyncMutexError::Function(error)
+            })
         })
     }
 }
