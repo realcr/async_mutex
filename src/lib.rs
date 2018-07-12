@@ -186,7 +186,7 @@ impl<T, E> Future for WaitPoll<T, E> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AsyncMutexError<E> {
     ResourceBroken,
     AwakenerCanceled,
