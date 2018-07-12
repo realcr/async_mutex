@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::marker::PhantomData;
 
-use futures::future;
 use futures::prelude::*;
 use futures::sync::oneshot;
 
@@ -73,15 +72,16 @@ impl<T> AsyncMutex<T> {
         F: FnOnce(&mut T) -> B,
         B: IntoFuture<Item = O, Error = E>,
     {
+        let inner = Rc::clone(&self.inner);
         WaitPoll {
             inner: Rc::clone(&self.inner),
             marker: Default::default(),
-        }.and_then(|(inner, receiver)| {
+        }.and_then(|receiver| {
             // Wait until we receive the resource via `receiver`
-            (future::ok(inner), receiver)
+            receiver
                 .into_future()
                 .map_err(|_| AsyncMutexError::AwakenerCanceled)
-        }).and_then(move |(inner, mut t)| {
+        }).and_then(move |mut t| {
             // The resource is received.
             let result = f(&mut t);
             wakeup_next(inner, t);
@@ -94,15 +94,16 @@ impl<T> AsyncMutex<T> {
         F: FnOnce(T) -> B,
         B: IntoFuture<Item = (T, O), Error = (Option<T>, E)>,
     {
+        let inner = Rc::clone(&self.inner);
         WaitPoll {
             inner: Rc::clone(&self.inner),
             marker: Default::default(),
-        }.and_then(|(inner, receiver)| {
+        }.and_then(|receiver| {
             // Wait until we receive the resource via `receiver`
-            (future::ok(inner), receiver)
+            receiver
                 .into_future()
                 .map_err(|_| AsyncMutexError::AwakenerCanceled)
-        }).and_then(move |(inner, t)| {
+        }).and_then(move |t| {
             // The resource is received.
            f(t).into_future().then(move |result| match result {
                Ok((resource, output)) => {
@@ -155,7 +156,7 @@ struct WaitPoll<T, E> {
 }
 
 impl<T, E> Future for WaitPoll<T, E> {
-    type Item = (Rc<RefCell<Inner<T>>>, oneshot::Receiver<T>);
+    type Item = oneshot::Receiver<T>;
     type Error = AsyncMutexError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -188,10 +189,7 @@ impl<T, E> Future for WaitPoll<T, E> {
             Inner::Empty => unreachable!(),
         };
 
-        Ok(Async::Ready((
-            Rc::clone(&self.inner),
-            receiver,
-        )))
+        Ok(Async::Ready(receiver))
     }
 }
 
