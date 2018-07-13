@@ -5,7 +5,6 @@ authors = ["real <real@freedomlayer.org>", "Kamyuen Tse <kevin.xjy@gmail.com>", 
 
 [dependencies]
 futures = "0.1"
-log = "0.4"
 
 [dev-dependencies]
-tokio-core = "0.1"
+tokio = "0.1.7"
