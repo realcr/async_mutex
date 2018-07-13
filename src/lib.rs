@@ -153,9 +153,7 @@ impl<T, E> Future for WaitPoll<T, E> {
     type Error = AsyncMutexError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let inner = self.inner.replace(Inner::Empty);
-
-        let receiver = match inner {
+        let receiver = match self.inner.replace(Inner::Empty) {
             Inner::Pending(mut awakener) => {
                 // Already in pending state, we just need to add a new awakener.
                 let receiver = awakener.add_awakener();
@@ -178,7 +176,10 @@ impl<T, E> Future for WaitPoll<T, E> {
                     }
                 }
             }
-            Inner::Broken => return Err(AsyncMutexError::ResourceBroken),
+            Inner::Broken => {
+                self.inner.replace(Inner::Broken);
+                return Err(AsyncMutexError::ResourceBroken);
+            }
             Inner::Empty => unreachable!(),
         };
 
@@ -317,6 +318,10 @@ mod tests {
             num_cell.num += 1;
             Ok((num_cell, ()))
         });
+        let task5 = async_mutex.acquire(|mut num_cell| -> Result<_, (_, ())> {
+            num_cell.num += 1;
+            Ok((num_cell, ()))
+        });
 
         assert_eq!(runtime.block_on(task1), Err(AsyncMutexError::Function(())));
 
@@ -324,6 +329,7 @@ mod tests {
 
         assert_eq!(runtime.block_on(task3), Err(AsyncMutexError::Function(())));
         assert_eq!(runtime.block_on(task4), Err(AsyncMutexError::ResourceBroken));
+        assert_eq!(runtime.block_on(task5), Err(AsyncMutexError::ResourceBroken));
     }
 
     #[test]
