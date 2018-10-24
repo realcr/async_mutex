@@ -71,7 +71,7 @@ impl<T> AsyncMutex<T> {
         }
     }
 
-    fn acquire_borrow<'b, 'a: 'b, F:'b, B:'b, O:'b>(&'a self, f: F) -> impl Future<Output=O> + 'b
+    pub fn acquire_borrow<'b, 'a: 'b, F:'b, B:'b, O:'b>(&'a self, f: F) -> impl Future<Output=O> + 'b
     where
         F: FnOnce(&mut T) -> B,
         B: Future<Output=O>,
