@@ -1,6 +1,6 @@
 [package]
-name = "async_mutex"
-version = "0.1.1"
+name = "async-mutex"
+version = "0.1.2"
 authors = ["real <real@freedomlayer.org>", "Kamyuen Tse <kevin.xjy@gmail.com>", "Do Duy <juchiast@gmail.com>"]
 edition = "2018"
 
@@ -8,4 +8,3 @@ edition = "2018"
 futures-preview = { version = "0.3.0-alpha.9" }
 
 [dev-dependencies]
-# tokio = "0.1.7"
