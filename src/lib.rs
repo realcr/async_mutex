@@ -100,12 +100,14 @@ impl<T> AsyncMutex<T> {
     }
 
     fn acquire(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
+
     {
         future::lazy(|_| ())
             .then(move |_| self.acquire_inner())
     }
 
     fn acquire_inner(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
+
     {
         let fut_wait = {
             let mut opt_pending_guard = self.mutex_opt_pending.lock().unwrap();
