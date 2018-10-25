@@ -1,3 +1,5 @@
+# AsyncMutex
+
 AsyncMutex is an asynchronous Mutex, used for synchronization in the context of
 Futures. A usual Mutex (from std) is not a good choice for synchronization
 between Futures, because it may block your future, and it will not be able to
