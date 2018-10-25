@@ -3,9 +3,12 @@
 #![feature(dbg_macro)]
 #![feature(nll)]
 #![feature(try_from)]
+#![feature(optin_builtin_traits)]
 #![crate_type = "lib"] 
 
-use std::sync::{Arc, Mutex};
+use std::ops::{Deref, DerefMut};
+use std::sync::Mutex;
+use std::cell::UnsafeCell;
 use std::collections::LinkedList;
 
 use futures::channel::oneshot;
@@ -50,45 +53,64 @@ impl Awakener {
 }
 
 #[derive(Debug)]
-struct Inner<T> {
-    mutex_resource: Mutex<T>,
+pub struct AsyncMutex<T> {
+    cell_resource: UnsafeCell<T>,
     mutex_opt_pending: Mutex<Option<Awakener>>,
 }
 
-#[derive(Debug)]
-pub struct AsyncMutex<T> {
-    arc_inner: Arc<Inner<T>>,
+pub struct AsyncMutexGuard<'a,T> {
+    async_mutex: &'a AsyncMutex<T>,
+}
+
+impl<'a,T> Drop for AsyncMutexGuard<'a,T> {
+    fn drop(&mut self) {
+        let mut opt_pending_guard = self.async_mutex.mutex_opt_pending.lock().unwrap();
+        if let Some(mut pending_guard) = (&mut *opt_pending_guard).take() {
+            if pending_guard.is_empty() {
+            } else {
+                pending_guard.wakeup_next();
+                *opt_pending_guard = Some(pending_guard);
+            }
+        } else {
+            unreachable!();
+        }
+    }
+}
+
+impl<'a,T> Deref for AsyncMutexGuard<'a,T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*self.async_mutex.cell_resource.get() }
+    }
+}
+
+impl<'a,T> DerefMut for AsyncMutexGuard<'a,T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.async_mutex.cell_resource.get() }
+    }
 }
 
 impl<T> AsyncMutex<T> {
     pub fn new(resource: T) -> AsyncMutex<T> {
-        let inner = Inner {
-            mutex_resource: Mutex::new(resource),
-            mutex_opt_pending: Mutex::new(None),
-        };
         AsyncMutex {
-            arc_inner: Arc::new(inner),
+            cell_resource: UnsafeCell::new(resource),
+            mutex_opt_pending: Mutex::new(None),
         }
     }
 
-    pub fn acquire_borrow<'a,'b:'a, F:'a,B:'a,O:'a>(&'b self, f: F) -> impl Future<Output=O> + 'a
-    where
-        F: FnOnce(&mut T) -> B,
-        B: Future<Output=O>,
+    fn acquire(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
+
     {
         future::lazy(|_| ())
-            .then(move |_| self.acquire_borrow_inner(f))
+            .then(move |_| self.acquire_inner())
     }
 
-    fn acquire_borrow_inner<'a,'b:'a, F:'a,B:'a, O:'a >(&'b self, f: F) -> impl Future<Output=O> + 'a
-    where
-        F: FnOnce(&mut T) -> B,
-        B: Future<Output=O>,
-    {
+    fn acquire_inner(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
 
-        let inner = &*self.arc_inner;
+    {
         let fut_wait = {
-            let mut opt_pending_guard = inner.mutex_opt_pending.lock().unwrap();
+            let mut opt_pending_guard = self.mutex_opt_pending.lock().unwrap();
 
             if let Some(pending) = &mut *opt_pending_guard {
                 // Register for waiting:
@@ -103,35 +125,26 @@ impl<T> AsyncMutex<T> {
 
         fut_wait
             .then(move |_| {
-                let mut resource_guard = inner.mutex_resource.lock().unwrap();
-                f(&mut *resource_guard)
-            }).then(move |output| {
-                let mut opt_pending_guard = inner.mutex_opt_pending.lock().unwrap();
-                if let Some(mut pending_guard) = (&mut *opt_pending_guard).take() {
-                    if pending_guard.is_empty() {
-                        *opt_pending_guard = None;
-                    } else {
-                        pending_guard.wakeup_next();
-                    }
-                }
-                future::ready(output)
+                let async_mutex_guard = AsyncMutexGuard {
+                    async_mutex: self,
+                };
+                future::ready(async_mutex_guard)
             })
-
     }
 }
 
+unsafe impl<'a,T> Send for AsyncMutexGuard<'a,T> {}
 
-impl<T> Clone for AsyncMutex<T> {
-    fn clone(&self) -> AsyncMutex<T> {
-        AsyncMutex {
-            arc_inner: Arc::clone(&self.arc_inner),
-        }
-    }
-}
+// TODO: This was done based on Mutex of std.
+// Find out what is the deeper meaning of this.
+unsafe impl<T: Send> Send for AsyncMutex<T> {}
+unsafe impl<T: Send> Sync for AsyncMutex<T> {}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use futures::{FutureExt, SinkExt, StreamExt};
     use futures::task::{SpawnExt};
     use futures::executor::ThreadPool;
@@ -147,7 +160,7 @@ mod tests {
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        let task1 = async_mutex.acquire_borrow(|num_cell| {
+        let task1 = async_mutex.acquire().then(|mut num_cell| {
             num_cell.num += 1;
             future::ready(())
         });
@@ -155,18 +168,18 @@ mod tests {
         thread_pool.run(task1);
 
         {
-            let _ = async_mutex.acquire_borrow(|num_cell| {
+            let _ = async_mutex.acquire().then(|mut num_cell| {
                 num_cell.num += 1;
                 future::ready(())
             });
 
-            let _ = async_mutex.acquire_borrow(|num_cell| {
+            let _ = async_mutex.acquire().then(|mut num_cell| {
                 num_cell.num += 1;
                 future::ready(())
             });
         }
 
-        let task2 = async_mutex.acquire_borrow(|num_cell| {
+        let task2 = async_mutex.acquire().then(|mut num_cell| {
             num_cell.num += 1;
             let num = num_cell.num;
             future::ready(num)
@@ -175,28 +188,29 @@ mod tests {
         assert_eq!(thread_pool.run(task2), 2);
     }
 
+
+    async fn inc_task(arc_async_mutex: Arc<AsyncMutex<NumCell>>, mut sender: mpsc::Sender<()>) {
+        {
+            let mut guard = await!(arc_async_mutex.acquire());
+            let resource = &mut *guard;
+            resource.num += 1;
+        }
+        await!(sender.send(())).unwrap();
+    }
+
     #[test]
     fn borrow_multiple() {
         const N: usize = 1_000;
-        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+        let arc_async_mutex = Arc::new(AsyncMutex::new(NumCell { num: 0 }));
 
         let mut thread_pool = ThreadPool::new().unwrap();
         let (sender, mut receiver) = mpsc::channel::<()>(0);
 
-        for _ in 0..N {
-            let c_async_mutex = async_mutex.clone();
-            let mut c_sender = sender.clone();
-            let task = async move {
-                await!(c_async_mutex.acquire_borrow(move |num_cell| {
-                    num_cell.num += 1;
-                    future::ready(())
-                }));
-                await!(c_sender.send(())).unwrap();
-            };
-            thread_pool.spawn(task.map(|_| ())).unwrap();
+        for _ in 0 .. N {
+            thread_pool.spawn(inc_task(arc_async_mutex.clone(), sender.clone())).unwrap();
         }
 
-        let task = async_mutex.acquire_borrow(|num_cell| {
+        let task = arc_async_mutex.acquire().then(|mut num_cell| {
             num_cell.num += 1;
             let num = num_cell.num;
             future::ready(num)
@@ -218,10 +232,10 @@ mod tests {
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task = async move {
-            await!(async_mutex.acquire_borrow(|num_cell| {
+            await!(async_mutex.acquire().then(|mut num_cell| {
                 num_cell.num += 1;
 
-                let mut _nested_task = async_mutex.acquire_borrow(|num_cell| {
+                let mut _nested_task = async_mutex.acquire().then(|mut num_cell| {
                     assert_eq!(num_cell.num, 1);
                     num_cell.num += 1;
                     future::ready(())
