@@ -2,7 +2,6 @@
 #![feature(generators)]
 #![feature(dbg_macro)]
 #![feature(nll)]
-#![feature(try_from)]
 #![feature(optin_builtin_traits)]
 #![crate_type = "lib"] 
 
@@ -52,6 +51,59 @@ impl Awakener {
     }
 }
 
+/// An asynchronous Mutex, used for synchronization in the context of Futures.
+/// A usual Mutex (from std) is not a good choice for synchronization between Futures, 
+/// because it may block your future, and it will not be able to yield execution to another future.
+///
+/// AsyncMutex yields execution to a different future if the resource is not ready.
+/// When the resource is ready, the future waiting for the resource will be woken up.
+///
+/// Example:
+/// ```
+/// #![feature(futures_api, pin, async_await, await_macro, arbitrary_self_types)]
+/// #![feature(generators)]
+/// use async_mutex::AsyncMutex;
+/// use std::sync::Arc;
+/// use futures::executor::ThreadPool;
+/// use futures::task::SpawnExt;
+/// use futures::{future, SinkExt, StreamExt};
+/// use futures::channel::mpsc;
+///
+/// struct NumCell {
+///     x: u32,
+/// }
+///
+/// impl NumCell {
+///     async fn add(&mut self) {
+///         await!(future::lazy(|_| {
+///             self.x += 1
+///         }));
+///     }
+/// }
+///
+/// async fn add_task(arc_mut_num_cell: Arc<AsyncMutex<NumCell>>, mut sender: mpsc::Sender<()>) {
+///     let mut guard = await!(arc_mut_num_cell.lock());
+///     await!(guard.add());
+///     await!(sender.send(())).unwrap();
+/// }
+///
+/// fn main() {
+///     let (sender, mut receiver) = mpsc::channel::<()>(0);
+///     let arc_mut_num_cell = Arc::new(AsyncMutex::new(NumCell {x: 0}));
+///     let mut thread_pool = ThreadPool::new().unwrap();
+///     for _ in 0 .. 100usize {
+///         thread_pool.spawn(add_task(arc_mut_num_cell.clone(), sender.clone()));
+///     }
+///     thread_pool.run(async move {
+///         for _ in 0 .. 100usize {
+///             await!(receiver.next()).unwrap();
+///         }
+///         let mut guard = await!(arc_mut_num_cell.lock());
+///         assert_eq!(guard.x, 100);
+///     });
+/// }
+///
+/// ```
 #[derive(Debug)]
 pub struct AsyncMutex<T> {
     cell_resource: UnsafeCell<T>,
@@ -99,14 +151,14 @@ impl<T> AsyncMutex<T> {
         }
     }
 
-    fn acquire(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
+    pub fn lock(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
 
     {
         future::lazy(|_| ())
-            .then(move |_| self.acquire_inner())
+            .then(move |_| self.lock_inner())
     }
 
-    fn acquire_inner(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
+    fn lock_inner(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
 
     {
         let fut_wait = {
@@ -160,7 +212,7 @@ mod tests {
 
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
-        let task1 = async_mutex.acquire().then(|mut num_cell| {
+        let task1 = async_mutex.lock().then(|mut num_cell| {
             num_cell.num += 1;
             future::ready(())
         });
@@ -168,18 +220,18 @@ mod tests {
         thread_pool.run(task1);
 
         {
-            let _ = async_mutex.acquire().then(|mut num_cell| {
+            let _ = async_mutex.lock().then(|mut num_cell| {
                 num_cell.num += 1;
                 future::ready(())
             });
 
-            let _ = async_mutex.acquire().then(|mut num_cell| {
+            let _ = async_mutex.lock().then(|mut num_cell| {
                 num_cell.num += 1;
                 future::ready(())
             });
         }
 
-        let task2 = async_mutex.acquire().then(|mut num_cell| {
+        let task2 = async_mutex.lock().then(|mut num_cell| {
             num_cell.num += 1;
             let num = num_cell.num;
             future::ready(num)
@@ -191,7 +243,7 @@ mod tests {
 
     async fn inc_task(arc_async_mutex: Arc<AsyncMutex<NumCell>>, mut sender: mpsc::Sender<()>) {
         {
-            let mut guard = await!(arc_async_mutex.acquire());
+            let mut guard = await!(arc_async_mutex.lock());
             let resource = &mut *guard;
             resource.num += 1;
         }
@@ -210,7 +262,7 @@ mod tests {
             thread_pool.spawn(inc_task(arc_async_mutex.clone(), sender.clone())).unwrap();
         }
 
-        let task = arc_async_mutex.acquire().then(|mut num_cell| {
+        let task = arc_async_mutex.lock().then(|mut num_cell| {
             num_cell.num += 1;
             let num = num_cell.num;
             future::ready(num)
@@ -232,10 +284,10 @@ mod tests {
         let async_mutex = AsyncMutex::new(NumCell { num: 0 });
 
         let task = async move {
-            await!(async_mutex.acquire().then(|mut num_cell| {
+            await!(async_mutex.lock().then(|mut num_cell| {
                 num_cell.num += 1;
 
-                let mut _nested_task = async_mutex.acquire().then(|mut num_cell| {
+                let mut _nested_task = async_mutex.lock().then(|mut num_cell| {
                     assert_eq!(num_cell.num, 1);
                     num_cell.num += 1;
                     future::ready(())
