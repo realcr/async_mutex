@@ -151,19 +151,9 @@ impl<T> AsyncMutex<T> {
         }
     }
 
-    pub fn lock(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
-
-    {
-        future::lazy(|_| ())
-            .then(move |_| self.lock_inner())
-    }
-
-    fn lock_inner(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_
-
-    {
-        let fut_wait = {
-            let mut opt_pending_guard = self.mutex_opt_pending.lock().unwrap();
-
+    pub fn lock(&self) -> impl Future<Output=AsyncMutexGuard<T>> + '_ {
+        let mut opt_pending_guard = self.mutex_opt_pending.lock().unwrap();
+        let fut_receiver = {
             if let Some(pending) = &mut *opt_pending_guard {
                 // Register for waiting:
                 pending.add_awakener()
@@ -174,14 +164,22 @@ impl<T> AsyncMutex<T> {
                 receiver
             }
         };
+        let async_mutex_guard = AsyncMutexGuard {
+            async_mutex: self,
+        };
+        
+        fut_receiver.then(move |_| {
+            future::ready(async_mutex_guard)
+        })
 
-        fut_wait
-            .then(move |_| {
-                let async_mutex_guard = AsyncMutexGuard {
-                    async_mutex: self,
-                };
-                future::ready(async_mutex_guard)
-            })
+        // If lock() is dropped at this point, async_mutex_guard should be dropped.
+        // This ensures that the next waiter will not be starved.
+        //
+        // TODO: This is not a full solution.
+        // This needs to be done more carefully.
+        // What happens if async_mutex_guard is dropped before fut_wait? 
+        // Maybe we can make sure this never happens.
+
     }
 }
 
@@ -197,7 +195,7 @@ unsafe impl<T: Send> Sync for AsyncMutex<T> {}
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use futures::{FutureExt, SinkExt, StreamExt};
+    use futures::{future, FutureExt, SinkExt, StreamExt};
     use futures::task::{SpawnExt};
     use futures::executor::ThreadPool;
     use futures::channel::mpsc;
@@ -300,5 +298,28 @@ mod tests {
 
         assert_eq!(thread_pool.run(task), 1);
     }
+
+    /*
+    #[test]
+    fn lock_drop_starvation() {
+        let mut thread_pool = ThreadPool::new().unwrap();
+
+        let async_mutex = AsyncMutex::new(NumCell { num: 0 });
+
+        thread_pool.run(async move {
+            println!("guard1");
+            let guard1 = await!(async_mutex.lock());
+            println!("guard2");
+            let guard2 = async_mutex.lock();
+            let boxed_guard2 = Box::pinned(guard2);
+            boxed_guard2.poll_unpin();
+            drop(guard1);
+            println!("guard3");
+            let mut guard3 = await!(async_mutex.lock());
+            guard3.num += 1;
+            assert_eq!(guard3.num, 1);
+        });
+    }
+    */
 
 }
